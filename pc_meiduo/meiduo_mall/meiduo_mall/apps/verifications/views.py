@@ -1,5 +1,5 @@
 from django.shortcuts import render
-
+from celery_tasks.sms.tasks import ccp_send_sms_code
 # Create your views here.
 import logging
 logger = logging.getLogger('django')
@@ -28,8 +28,8 @@ class SMSCodeView(View):
     def get(self,request,mobile):
 
         redis_conn = get_redis_connection('verify_code')
-        time = redis_conn.get('time_%s'%mobile)
-        if time:
+        time_redis = redis_conn.get('time_%s'%mobile)
+        if time_redis:
             return JsonResponse({'code':400,'errmsg':'发送短信过于频繁'})
         # 接收参数
 
@@ -53,9 +53,9 @@ class SMSCodeView(View):
         except Exception as e:
             logger.error(e)
 
-        image_code_sc = image_code_s.decode()
+        image_new = image_code_s.decode()
         # 对比图形验证码
-        if image_code_c.lower() != image_code_sc.lower():
+        if image_code_c.lower() != image_new.lower():
             return JsonResponse({'code':400,
                                  'errmsg':'输入图形验证码有误'})
 
@@ -63,12 +63,15 @@ class SMSCodeView(View):
         sms_code = '%06d'% random.randint(0,999999)
         logger.info(sms_code)
 
+        pl = redis_conn.pipeline()
         # 保存短信验证码
         # 有效时间为300秒
-        redis_conn.setex('sms_%s'%mobile,300,sms_code)
-        redis_conn.setex('time_%s'%mobile,60,1)
+        pl.setex('sms_%s'%mobile,300,sms_code)
+        pl.setex('time_%s'%mobile,60,1)
+        pl.execute()
         # 发送短信验证码
-        CCP().send_template_sms(mobile,[sms_code,5],1)
+        # CCP().send_template_sms(mobile,[sms_code,5],1)
+        ccp_send_sms_code.delay(mobile, sms_code)
 
         return JsonResponse({'code':0,
                              'errmsg':'发送短信成功'})
